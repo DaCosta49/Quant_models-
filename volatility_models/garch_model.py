@@ -4,6 +4,8 @@ import yfinance as yf
 from arch import arch_model
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
+import os
+import time
 
 class GARCHModel:
     def __init__(self, ticker, start_date, end_date):
@@ -25,10 +27,42 @@ class GARCHModel:
         
     def fetch_data(self):
         """Fetch historical price data and calculate returns"""
-        self.data = yf.download(self.ticker, start=self.start_date, end=self.end_date)['Adj Close']
-        self.returns = 100 * self.data.pct_change().dropna()
-        return self.returns
-    
+        try:
+            # First try to use sample data
+            data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'stock_data.csv')
+            if os.path.exists(data_path):
+                print(f"Using sample data from {data_path}")
+                data = pd.read_csv(data_path, index_col='Date', parse_dates=True)
+                self.data = data['Adj Close']
+            else:
+                # Fallback to yfinance with retry logic
+                max_retries = 3
+                retry_delay = 5
+                
+                for attempt in range(max_retries):
+                    try:
+                        self.data = yf.download(self.ticker, 
+                                              start=self.start_date, 
+                                              end=self.end_date, 
+                                              progress=False)['Adj Close']
+                        break
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            print(f"Attempt {attempt + 1} failed. Retrying in {retry_delay} seconds...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                        else:
+                            raise Exception(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
+            
+            if self.data.empty:
+                raise ValueError("No data available for the specified period")
+                
+            self.returns = 100 * self.data.pct_change().dropna()
+            return self.returns
+            
+        except Exception as e:
+            raise Exception(f"Error fetching data: {str(e)}")
+        
     def fit_model(self, p=1, q=1):
         """
         Fit GARCH(p,q) model to returns data
@@ -121,32 +155,41 @@ class GARCHModel:
         plt.show()
 
 def main():
-    # Example usage
-    garch = GARCHModel('AAPL', '2020-01-01', '2023-12-31')
+    # Example usage with shorter time period
+    garch = GARCHModel('AAPL', '2023-01-01', '2023-12-31')
     
-    # Fetch and prepare data
-    returns = garch.fetch_data()
-    print(f"Number of observations: {len(returns)}")
-    
-    # Fit GARCH(1,1) model
-    results = garch.fit_model(p=1, q=1)
-    print("\nModel Parameters:")
-    print(results.params)
-    
-    # Plot volatility
-    garch.plot_volatility()
-    
-    # Calculate and print VaR
-    var_95 = garch.calculate_var(0.95)
-    print(f"\n95% Value at Risk: {var_95:.2f}%")
-    
-    # Forecast volatility
-    forecast = garch.forecast_volatility(horizon=10)
-    print(f"\nForecasted volatility for next 10 days:")
-    print(forecast)
-    
-    # Plot Q-Q plot
-    garch.plot_qq()
+    try:
+        # Fetch and prepare data
+        print("Fetching data...")
+        returns = garch.fetch_data()
+        print(f"Number of observations: {len(returns)}")
+        
+        # Fit GARCH(1,1) model
+        print("\nFitting GARCH(1,1) model...")
+        results = garch.fit_model(p=1, q=1)
+        print("\nModel Parameters:")
+        print(results.params)
+        
+        # Plot volatility
+        print("\nPlotting volatility...")
+        garch.plot_volatility()
+        
+        # Calculate and print VaR
+        var_95 = garch.calculate_var(0.95)
+        print(f"\n95% Value at Risk: {var_95:.2f}%")
+        
+        # Forecast volatility
+        print("\nForecasting volatility...")
+        forecast = garch.forecast_volatility(horizon=5)  # Reduced horizon for sample data
+        print(f"\nForecasted volatility for next 5 days:")
+        print(forecast)
+        
+        # Plot Q-Q plot
+        print("\nGenerating Q-Q plot...")
+        garch.plot_qq()
+        
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
 
 if __name__ == "__main__":
     main()
