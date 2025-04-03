@@ -4,16 +4,13 @@ import yfinance as yf
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, r2_score
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import os
 import time
 
 class StockPredictor:
-    def __init__(self, ticker, start_date, end_date, sequence_length=60):
+    def __init__(self, ticker, start_date, end_date):
         """
         Initialize Stock Price Predictor
         
@@ -21,16 +18,13 @@ class StockPredictor:
         ticker (str): Stock ticker symbol
         start_date (str): Start date in 'YYYY-MM-DD' format
         end_date (str): End date in 'YYYY-MM-DD' format
-        sequence_length (int): Number of time steps for LSTM
         """
         self.ticker = ticker
         self.start_date = start_date
         self.end_date = end_date
-        self.sequence_length = sequence_length
         self.data = None
         self.scaler = MinMaxScaler()
         self.rf_model = None
-        self.lstm_model = None
         
     def fetch_data(self):
         """Fetch and prepare stock data"""
@@ -65,8 +59,7 @@ class StockPredictor:
             
             # Calculate technical indicators
             self.data['Returns'] = self.data['Adj Close'].pct_change()
-            self.data['SMA_20'] = self.data['Adj Close'].rolling(window=20).mean()
-            self.data['SMA_50'] = self.data['Adj Close'].rolling(window=50).mean()
+            self.data['SMA_5'] = self.data['Adj Close'].rolling(window=5).mean()
             self.data['RSI'] = self._calculate_rsi(self.data['Adj Close'])
             
             # Drop NaN values
@@ -93,7 +86,7 @@ class StockPredictor:
         """Prepare data for ML models"""
         # Features for RF
         feature_columns = ['Open', 'High', 'Low', 'Close', 'Volume', 
-                         'Returns', 'SMA_20', 'SMA_50', 'RSI']
+                         'Returns', 'SMA_5', 'RSI']
         
         # Scale the data
         scaled_data = self.scaler.fit_transform(self.data[feature_columns + [target_col]])
@@ -112,155 +105,62 @@ class StockPredictor:
         y_train = y[:train_size]
         y_test = y[train_size:]
         
-        # Prepare sequences for LSTM
-        X_train_lstm = []
-        y_train_lstm = []
-        X_test_lstm = []
-        y_test_lstm = []
-        
-        for i in range(self.sequence_length, len(X_train)):
-            X_train_lstm.append(X_train[i-self.sequence_length:i].values)
-            y_train_lstm.append(y_train[i])
-            
-        for i in range(self.sequence_length, len(X_test)):
-            X_test_lstm.append(X_test[i-self.sequence_length:i].values)
-            y_test_lstm.append(y_test[i])
-        
-        X_train_lstm = np.array(X_train_lstm)
-        y_train_lstm = np.array(y_train_lstm)
-        X_test_lstm = np.array(X_test_lstm)
-        y_test_lstm = np.array(y_test_lstm)
-        
-        return {
-            'rf': (X_train, X_test, y_train, y_test),
-            'lstm': (X_train_lstm, X_test_lstm, y_train_lstm, y_test_lstm)
-        }
+        return X_train, X_test, y_train, y_test
     
-    def train_random_forest(self, data):
+    def train_model(self, X_train, y_train):
         """Train Random Forest model"""
-        X_train, _, y_train, _ = data['rf']
-        
         self.rf_model = RandomForestRegressor(n_estimators=100, 
                                             random_state=42)
         self.rf_model.fit(X_train, y_train)
     
-    def train_lstm(self, data):
-        """Train LSTM model"""
-        X_train, _, y_train, _ = data['lstm']
-        
-        self.lstm_model = Sequential([
-            LSTM(50, return_sequences=True, input_shape=(self.sequence_length, X_train.shape[2])),
-            Dropout(0.2),
-            LSTM(50, return_sequences=False),
-            Dropout(0.2),
-            Dense(1)
-        ])
-        
-        self.lstm_model.compile(optimizer='adam', loss='mse')
-        self.lstm_model.fit(X_train, y_train, 
-                          epochs=50, 
-                          batch_size=32,
-                          verbose=0)
+    def evaluate_model(self, X_test, y_test):
+        """Evaluate the model"""
+        predictions = self.rf_model.predict(X_test)
+        rmse = np.sqrt(mean_squared_error(y_test, predictions))
+        r2 = r2_score(y_test, predictions)
+        return predictions, rmse, r2
     
-    def evaluate_models(self, data):
-        """Evaluate both models"""
-        _, X_test_rf, _, y_test_rf = data['rf']
-        _, X_test_lstm, _, y_test_lstm = data['lstm']
-        
-        # RF predictions
-        rf_pred = self.rf_model.predict(X_test_rf)
-        rf_rmse = np.sqrt(mean_squared_error(y_test_rf, rf_pred))
-        rf_r2 = r2_score(y_test_rf, rf_pred)
-        
-        # LSTM predictions
-        lstm_pred = self.lstm_model.predict(X_test_lstm)
-        lstm_rmse = np.sqrt(mean_squared_error(y_test_lstm, lstm_pred))
-        lstm_r2 = r2_score(y_test_lstm, lstm_pred)
-        
-        return {
-            'rf': {'rmse': rf_rmse, 'r2': rf_r2, 'pred': rf_pred},
-            'lstm': {'rmse': lstm_rmse, 'r2': lstm_r2, 'pred': lstm_pred}
-        }
-    
-    def plot_predictions(self, data, results):
+    def plot_predictions(self, y_test, predictions):
         """Plot actual vs predicted values"""
-        _, X_test_rf, _, y_test_rf = data['rf']
-        _, X_test_lstm, _, y_test_lstm = data['lstm']
-        
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-        
-        # Random Forest predictions
-        ax1.plot(y_test_rf.index, y_test_rf, label='Actual', alpha=0.7)
-        ax1.plot(y_test_rf.index, results['rf']['pred'], label='Predicted (RF)', alpha=0.7)
-        ax1.set_title('Random Forest Predictions')
-        ax1.set_xlabel('Date')
-        ax1.set_ylabel('Scaled Price')
-        ax1.legend()
-        
-        # LSTM predictions
-        ax2.plot(y_test_lstm.index[-len(y_test_lstm):], y_test_lstm, 
-                label='Actual', alpha=0.7)
-        ax2.plot(y_test_lstm.index[-len(y_test_lstm):], results['lstm']['pred'], 
-                label='Predicted (LSTM)', alpha=0.7)
-        ax2.set_title('LSTM Predictions')
-        ax2.set_xlabel('Date')
-        ax2.set_ylabel('Scaled Price')
-        ax2.legend()
-        
-        plt.tight_layout()
+        plt.figure(figsize=(12, 6))
+        plt.plot(y_test.index, y_test, label='Actual', alpha=0.7)
+        plt.plot(y_test.index, predictions, label='Predicted', alpha=0.7)
+        plt.title('Random Forest Stock Price Predictions')
+        plt.xlabel('Date')
+        plt.ylabel('Scaled Price')
+        plt.legend()
         plt.show()
 
 def main():
     try:
-        # Example usage with shorter time period and reduced parameters for sample data
+        # Example usage
         predictor = StockPredictor('AAPL', 
                                  start_date='2023-01-01',
-                                 end_date='2023-12-31',
-                                 sequence_length=5)  # Reduced for sample data
+                                 end_date='2023-12-31')
         
         # Fetch and prepare data
         print("Fetching and preparing data...")
         predictor.fetch_data()
-        data = predictor.prepare_data(test_size=0.3)  # Increased test size for small sample
+        X_train, X_test, y_train, y_test = predictor.prepare_data(test_size=0.3)
         
         # Train Random Forest model
         print("\nTraining Random Forest model...")
-        predictor.train_random_forest(data)
-        
-        # Train LSTM model with reduced epochs
-        print("\nTraining LSTM model...")
-        predictor.lstm_model = Sequential([
-            LSTM(25, return_sequences=True, input_shape=(predictor.sequence_length, data['lstm'][0].shape[2])),
-            Dropout(0.1),
-            LSTM(25, return_sequences=False),
-            Dropout(0.1),
-            Dense(1)
-        ])
-        predictor.lstm_model.compile(optimizer='adam', loss='mse')
-        predictor.lstm_model.fit(data['lstm'][0], data['lstm'][2], 
-                               epochs=10,  # Reduced epochs for testing
-                               batch_size=8,
-                               verbose=1)
+        predictor.train_model(X_train, y_train)
         
         # Evaluate and display results
-        print("\nEvaluating models...")
-        results = predictor.evaluate_models(data)
+        print("\nEvaluating model...")
+        predictions, rmse, r2 = predictor.evaluate_model(X_test, y_test)
         
         print("\nModel Performance:")
-        print("Random Forest:")
-        print(f"RMSE: {results['rf']['rmse']:.4f}")
-        print(f"R²: {results['rf']['r2']:.4f}")
-        
-        print("\nLSTM:")
-        print(f"RMSE: {results['lstm']['rmse']:.4f}")
-        print(f"R²: {results['lstm']['r2']:.4f}")
+        print(f"RMSE: {rmse:.4f}")
+        print(f"R²: {r2:.4f}")
         
         # Plot predictions
         print("\nPlotting predictions...")
-        predictor.plot_predictions(data, results)
+        predictor.plot_predictions(y_test, predictions)
         
     except Exception as e:
         print(f"An error occurred: {str(e)}")
-        
+
 if __name__ == "__main__":
     main()
